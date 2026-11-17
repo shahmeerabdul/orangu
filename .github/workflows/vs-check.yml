@@ -1,0 +1,51 @@
+name: vs-check
+on:
+  push:
+    branches: [vs-check]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: dotnet build and test
+        working-directory: contrib/visualstudio
+        run: |
+          dotnet build
+          dotnet test --no-build --logger "console;verbosity=normal"
+      - name: Visual Studio on the runner
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -format text | Select-String -Pattern "displayName|installationVersion|catalog_productLineVersion"
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Workload.VisualStudioExtension -property installationPath
+      - uses: microsoft/setup-msbuild@v2
+      - name: msbuild makes the vsix
+        run: msbuild contrib\visualstudio\Orangu.VisualStudio\Orangu.VisualStudio.csproj /restore /p:Configuration=Release /v:m
+      - name: what is in the vsix
+        shell: pwsh
+        run: |
+          $vsix = Get-ChildItem -Recurse contrib\visualstudio -Filter *.vsix | Select-Object -First 1
+          if (-not $vsix) { throw "no vsix" }
+          "$($vsix.FullName) $($vsix.Length) bytes"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead($vsix.FullName)
+          $zip.Entries | ForEach-Object { $_.FullName }
+          $zip.Dispose()
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: contrib/visualstudio/**/*.vsix
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: dotnet build and test
+        working-directory: contrib/visualstudio
+        run: |
+          dotnet build
+          dotnet test --no-build
