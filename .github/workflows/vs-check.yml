@@ -3,49 +3,36 @@ on:
   push:
     branches: [vs-check]
 jobs:
-  windows:
+  release-step:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: dotnet build and test
+      - name: Test and pack the extension (as in release.yml)
+        shell: pwsh
         working-directory: contrib/visualstudio
+        env:
+          TAG: '2.1.0'
         run: |
-          dotnet build
-          dotnet test --no-build --logger "console;verbosity=normal"
-      - name: Visual Studio on the runner
+          $version = $env:TAG -replace '^v', ''
+          $properties = @('-c', 'Release')
+          if ($version -match '^\d+(\.\d+){1,3}$') { $properties += "-p:Version=$version" }
+          dotnet test @properties
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vsix = "orangu-$env:TAG-visualstudio.vsix"
+          Copy-Item Orangu.VisualStudio\bin\Release\net8.0-windows8.0\Orangu.VisualStudio.vsix "..\..\$vsix"
+          "VSIX=$vsix" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Check the package
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -format text | Select-String -Pattern "displayName|installationVersion|catalog_productLineVersion"
-          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Workload.VisualStudioExtension -property installationPath
-      - uses: microsoft/setup-msbuild@v2
-      - name: msbuild makes the vsix
-        run: msbuild contrib\visualstudio\Orangu.VisualStudio\Orangu.VisualStudio.csproj /restore /p:Configuration=Release /v:m
-      - name: what is in the vsix
-        shell: pwsh
-        run: |
-          $vsix = Get-ChildItem -Recurse contrib\visualstudio -Filter *.vsix | Select-Object -First 1
-          if (-not $vsix) { throw "no vsix" }
-          "$($vsix.FullName) $($vsix.Length) bytes"
+          "VSIX=$env:VSIX"
+          Get-Item $env:VSIX | Format-List Name,Length
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [IO.Compression.ZipFile]::OpenRead($vsix.FullName)
-          $zip.Entries | ForEach-Object { $_.FullName }
-          $zip.Dispose()
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vsix
-          path: contrib/visualstudio/**/*.vsix
-  macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - name: dotnet build and test
-        working-directory: contrib/visualstudio
-        run: |
-          dotnet build
-          dotnet test --no-build
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $env:VSIX))
+          $entry = $zip.GetEntry('extension.vsixmanifest')
+          $reader = New-Object IO.StreamReader($entry.Open())
+          $manifest = $reader.ReadToEnd(); $reader.Dispose(); $zip.Dispose()
+          ($manifest -split "`n") | Select-String -Pattern 'Identity|InstallationTarget '
+          if ($manifest -notmatch 'Version="2\.1\.0') { throw "version not in manifest" }
